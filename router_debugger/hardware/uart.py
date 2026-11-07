@@ -182,6 +182,102 @@ def interrupt_bootloader(
     except Exception as e:
         return {"success": False, "error": str(e), "log": "".join(log_buffer)}
 
+def extract_technical_specs(log_text: str) -> Dict[str, Any]:
+    """
+    Parses U-Boot and Linux kernel boot logs to extract technical hardware specifications:
+    SoC, CPU Clock, Memory/DRAM, Flash Chip, MTD partitions, MAC addresses, and Bootloader.
+    """
+    import re
+
+    specs = {
+        "bootloader": None,
+        "soc_cpu": None,
+        "cpu_clock": None,
+        "ram_memory": None,
+        "flash_chip": None,
+        "linux_kernel": None,
+        "mac_addresses": [],
+        "mtd_partitions": [],
+        "network_interfaces": [],
+        "bootargs": None
+    }
+
+    # 1. Bootloader
+    bl_match = re.search(r"(U-Boot\s+[0-9\.\-a-zA-Z_]+(?:\s+\([^\)]+\))?|CFE\s+version\s+[0-9\.\-]+|RedBoot[^\r\n]+|RouterBOOT[^\r\n]+)", log_text, re.IGNORECASE)
+    if bl_match:
+        specs["bootloader"] = bl_match.group(1).strip()
+
+    # 2. SoC / CPU Model
+    soc_patterns = [
+        r"(?:CPU|SoC|system type|model name|Processor)\s*[:=]\s*([^\r\n]+)",
+        r"(MediaTek|Ralink|Qualcomm|Atheros|Broadcom|Realtek|Allwinner|Rockchip)\s+([A-Za-z0-9_-]+)"
+    ]
+    for pat in soc_patterns:
+        m = re.search(pat, log_text, re.IGNORECASE)
+        if m:
+            specs["soc_cpu"] = m.group(0).strip()
+            break
+
+    # 3. CPU Clock Frequency
+    clock_m = re.search(r"(?:CPU\s*(?:clock|freq|rate)?|Clocks|Clock|cpu\s*MHz)\s*[:=]?\s*([0-9]+(?:\.[0-9]+)?\s*(?:MHz|GHz))", log_text, re.IGNORECASE)
+    if clock_m:
+        specs["cpu_clock"] = clock_m.group(1)
+
+    # 4. RAM / DRAM
+    ram_patterns = [
+        r"(?:DRAM|Memory|RAM|Total RAM)\s*[:=]?\s*([0-9]+\s*(?:MB|MiB|GB|GiB|KB))",
+        r"Memory:\s*([0-9]+k/[0-9]+k\s*available)",
+        r"(\d+)\s*(?:MB|MiB)\s+(?:DDR\d*|SDRAM|DRAM)"
+    ]
+    for pat in ram_patterns:
+        m = re.search(pat, log_text, re.IGNORECASE)
+        if m:
+            specs["ram_memory"] = m.group(1).strip()
+            break
+
+    # 5. Flash Memory (SPI NOR / NAND)
+    flash_patterns = [
+        r"(?:Flash|SPI NOR|SPI Flash|NAND device|SPI-NAND|Found)\s*[:=]?\s*([^\r\n]+(?:Winbond|Macronix|GigaDevice|Spansion|MX25|W25Q|GD25|[0-9]+\s*(?:MB|MiB|KiB)))",
+        r"(?:Flash|SPI Flash)\s*:\s*([0-9]+\s*(?:MB|MiB|KiB))",
+        r"spi-nor[^\r\n]+:\s*([^\r\n]+)",
+        r"(\d+)\s*(?:MB|MiB)\s+(?:SPI\s+Flash|NOR|NAND)"
+    ]
+    for pat in flash_patterns:
+        m = re.search(pat, log_text, re.IGNORECASE)
+        if m:
+            specs["flash_chip"] = m.group(1).strip()
+            break
+
+    # 6. Linux Kernel
+    k_match = re.search(r"Linux version\s+([0-9\.\-a-zA-Z+]+)", log_text)
+    if k_match:
+        specs["linux_kernel"] = k_match.group(1)
+
+    # 7. MAC Addresses
+    macs = set(re.findall(r"(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}", log_text))
+    # Filter broadcast / multicast / all zero
+    specs["mac_addresses"] = [
+        m for m in macs if not m.lower().startswith("ff:ff") and not m.lower().startswith("00:00:00:00")
+    ]
+
+    # 8. MTD Partitions (e.g. 0x00000000-0x00040000 : "u-boot")
+    mtd_matches = re.findall(r"0x([0-9a-fA-F]+)-0x([0-9a-fA-F]+)\s*:\s*\"([^\"]+)\"", log_text)
+    for start, end, name in mtd_matches:
+        size_bytes = int(end, 16) - int(start, 16)
+        size_str = f"{size_bytes // 1024} KB" if size_bytes < 1024 * 1024 else f"{size_bytes // (1024 * 1024)} MB"
+        specs["mtd_partitions"].append({
+            "name": name,
+            "range": f"0x{start}-0x{end}",
+            "size": size_str
+        })
+
+    # 9. Bootargs
+    bargs = re.search(r"(?:Kernel command line|bootargs)\s*[:=]\s*([^\r\n]+)", log_text, re.IGNORECASE)
+    if bargs:
+        specs["bootargs"] = bargs.group(1).strip()
+
+    return specs
+
 class SerialLogger:
     """Live Serial Terminal monitor with capture to log file."""
     def __init__(self, port: str, baud: int, log_file: Optional[str] = None):

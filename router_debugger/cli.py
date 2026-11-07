@@ -18,7 +18,7 @@ from router_debugger.hardware.pinout_guide import (
     get_hardware_safety_summary, UART_SAFETY_RULES, MULTIMETER_PROCEDURE, SPI_FLASH_SOIC8_PINOUT
 )
 from router_debugger.hardware.uart import (
-    list_serial_ports, detect_baud_rate, interrupt_bootloader, SerialLogger
+    list_serial_ports, detect_baud_rate, interrupt_bootloader, SerialLogger, extract_technical_specs
 )
 from router_debugger.network.tftp_server import TFTPServer
 from router_debugger.network.scanner import detect_default_gateway, scan_router_ports
@@ -124,6 +124,59 @@ def handle_uart(args):
             console.print("\n[bold green]>>> BOOTLOADER INTERRUPTED SUCCESSFULLY! Prompt detected. <<<[/bold green]")
         else:
             console.print("\n[bold red]Autoboot window passed or no prompt detected. Try again or change trigger sequence.[/bold red]")
+        return
+
+    if getattr(args, "analyze_boot", False):
+        console.print(f"[bold green]Starting live boot capture and spec extractor on {selected_port} ({args.baud} baud)...[/bold green]")
+        console.print("[cyan]Turn ON router power NOW. Press Ctrl+C when boot completes to view full technical specs.[/cyan]\n")
+        captured_chunks = []
+        log_path = args.log_file or f"boot_log_{selected_port.replace('/', '_')}.txt"
+        
+        try:
+            with open(log_path, "w", encoding="utf-8") as lf:
+                def on_data(text):
+                    console.print(text, end="")
+                    captured_chunks.append(text)
+                    lf.write(text)
+                    lf.flush()
+
+                logger = SerialLogger(selected_port, args.baud)
+                logger.start(on_data=on_data)
+                while True:
+                    time.sleep(0.5)
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Stopping capture and analyzing boot log...[/yellow]")
+        finally:
+            if 'logger' in locals():
+                logger.stop()
+
+        full_log = "".join(captured_chunks)
+        specs = extract_technical_specs(full_log)
+
+        spec_table = Table(title=f"Extracted Technical Specifications ({selected_port})", header_style="bold magenta")
+        spec_table.add_column("Parameter", style="bold cyan", width=20)
+        spec_table.add_column("Detected Value", style="bold white")
+
+        spec_table.add_row("Bootloader", specs.get("bootloader") or "Unknown / Not captured")
+        spec_table.add_row("SoC / CPU Model", specs.get("soc_cpu") or "Unknown")
+        spec_table.add_row("CPU Clock", specs.get("cpu_clock") or "Unknown")
+        spec_table.add_row("RAM / DRAM Size", specs.get("ram_memory") or "Unknown")
+        spec_table.add_row("Flash Storage IC", specs.get("flash_chip") or "Unknown")
+        spec_table.add_row("Linux Kernel", specs.get("linux_kernel") or "Unknown")
+        spec_table.add_row("MAC Address(es)", ", ".join(specs.get("mac_addresses", [])) or "None detected")
+        spec_table.add_row("Boot Arguments", specs.get("bootargs") or "Default")
+        console.print(spec_table)
+
+        if specs.get("mtd_partitions"):
+            mtd_table = Table(title="Detected MTD Flash Partitions", header_style="bold green")
+            mtd_table.add_column("Partition Name", style="bold yellow")
+            mtd_table.add_column("Memory Range", style="cyan")
+            mtd_table.add_column("Size", style="white")
+            for m in specs["mtd_partitions"]:
+                mtd_table.add_row(m["name"], m["range"], m["size"])
+            console.print(mtd_table)
+
+        console.print(f"[bold green]Full raw boot log saved to: {Path(log_path).resolve()}[/bold green]")
         return
 
     # Default: Serial Terminal
@@ -339,6 +392,7 @@ def main():
     uart_p.add_argument("--port", help="COM port (e.g. COM3 or /dev/ttyUSB0)")
     uart_p.add_argument("--baud", type=int, default=115200, help="Baud rate (default: 115200)")
     uart_p.add_argument("--detect-baud", action="store_true", help="Auto-probe and detect correct baud rate")
+    uart_p.add_argument("--analyze-boot", action="store_true", help="Capture live boot logs and auto-extract hardware specs (CPU, RAM, Flash, MTD)")
     uart_p.add_argument("--interrupt", action="store_true", help="Auto-spam bootloader break keys on power-up")
     uart_p.add_argument("--trigger", choices=["space", "enter", "ctrl_c", "tpl", "all"], default="space", help="Bootloader interrupt keystroke")
     uart_p.add_argument("--log-file", help="File to log serial console output")
