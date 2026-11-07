@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "router-debugger"
+version = "0.1.0"
+description = "Hardware Hacking and Troubleshooting Toolkit for Embedded Routers & IoT Devices"
+readme = "README.md"
+authors = [{ name = "Hardware Security Lab" }]
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "pyserial>=3.5",
+    "rich>=13.7.0",
+    "fastapi>=0.109.0",
+    "uvicorn>=0.27.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[project.scripts]
+router-debugger = "router_debugger.cli:main"
